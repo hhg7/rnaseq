@@ -11,8 +11,7 @@ local $SIG{__WARN__} = sub {#kill the program if there are any warnings
 	die "$message\n";
 };#http://perlmaven.com/how-to-capture-and-save-warnings-in-perl
 
-print "This script creates STAR commands for a directory of fastq files.  It detects the compression, and tells STAR to align the files with compression in mind.\n";
-print "\n";
+say "This script creates STAR commands for a directory of fastq files.  It detects the compression, and tells STAR to align the files with compression in mind.";
 
 sub execute {
 	my $command = shift;
@@ -32,7 +31,6 @@ sub list_regex_files {
 	while (defined $_[0]) {
 		my $regex = shift;
 		push @regex, $regex;
-		say $regex;
 	}
 	my @files;
 	opendir my $dh, '.' or die "Can't opendir on current directory: $!";
@@ -47,6 +45,10 @@ sub list_regex_files {
 	return @files;
 }
 
+sub help {
+	say "Sample execution: 'perl $0 -g /home/user/directory'";
+}
+
 use Getopt::Long 'GetOptions';
 my $gtf;
 my $debug;
@@ -59,18 +61,20 @@ GetOptions ('a=s' => \$gtf,
 
 if (defined $gtf) {
 	unless (-e $gtf) {
-		print "\n$gtf doesn't exist.\n\n";
+		say "\n$gtf doesn't exist.\n";
 		die;
 	}
 }
 
 if (!defined $genomeDir) {
 	say "A genome directory must be specified for STAR, which can be done with the \"-g\" option.";
+	help();
 	die;
 }
 
 unless (-d $genomeDir) {
 	say "$genomeDir isn't a directory.";
+	help();
 	die;
 }
 
@@ -78,36 +82,65 @@ if ($debug) {
 	say "Debugging is set to ON.\n";
 }
 
-foreach my $file (list_regex_files('\.fastq', '\.fq')) {
-	print "$file\n";
+my %files;#if this run is paired-end, I don't want to do runs more than once
+foreach my $fastq (list_regex_files('\.fastq', '\.fq')) {
+	my $file = "$TOP_DIRECTORY/$fastq";
+	my $input = $file;#may later have paired end partner added, which $file won't
+	if (defined $files{$file}) {
+		next;
+	}#if this is a paired end file I've already accounted for, ignore it
+	$files{$file} = 1;
 	my $prefix;
-	if ($file =~ m/(\d+)\.fastq.bz2/) {
+	if ($file =~ m/$TOP_DIRECTORY\/(.+)\.fastq.bz2/) {
 		$prefix = $1;
 	} else {
-		print "Couldn't find a prefix for $file\n";
+		say "Couldn't find a prefix for $file";
 		die;
+	}
+	if ($file =~ m/_R([12])_001\.fastq/) {#Illumina's paired end file notation
+		my $side = $1;
+		my $other = $file;
+		$prefix =~ s/_R[12]_001//;
+		if ($side == 1) {#if this file is the R1 partner
+			$other =~ s/_R1_001.fastq/_R2_001.fastq/;
+			if (!-e $other) {
+				say "The paired end partner for $file ($other) doesn't exist.";
+				die;
+			}
+			$input = "$file $other";
+			$files{$other} = 1;
+		} else {#i.e. R = 2
+			$other =~ s/_R2_002.fastq/_R1_001.fastq/;
+			if (!-e $other) {
+				say "The paired end partner for $file ($other) doesn't exist.";
+				die;
+			}
+			$input = "$file $other";
+			$files{$other} = 1;
+		}
 	}
 	my $compression = '';
 	if ($file =~ m/\.bz2$/) {#if the file is bz2 compressed
-		$compression = '--readFilesCommand bzcat';#tell star the file is bz2 compressed
+		$compression = '--readFilesCommand bzcat';#tell STAR the file is bz2 compressed
 	} elsif ($file =~ m/\.gz$/) {#if the file is gz compressed
-		$compression = '--readFilesCommand zcat';#tell star the file is gz compressed
+		$compression = '--readFilesCommand zcat';#tell STAR the file is gz compressed
 	}
-	my $STAR_command = "STAR --genomeDir $genomeDir --outFileNamePrefix $prefix $compression --outSAMtype BAM SortedByCoordinate --outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 40 --readFilesIn $TOP_DIRECTORY/$file > $prefix.out 2> prefix.err";
+	my $STAR_command = "/usr/bin/time STAR --genomeDir $genomeDir --outFileNamePrefix $prefix $compression --outSAMtype BAM SortedByCoordinate --outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 40 --readFilesIn $input > $prefix.out 2> $prefix.err";
 	mkdir $prefix;
 	chdir $prefix or die "Can't chdir to $prefix: $!";
-	if (!$debug) {#i.e. if $debug isn't defined
-		print "Would now run STAR\n";
-#		execute($STAR_command);
+	if ($debug) {#i.e. if $debug isn't defined
+		say "Would now run STAR as\n\n$STAR_command";
+	} else {
+		execute($STAR_command);
 	}
-#	chdir '..' or die "Can't chdir to original directory: $!";
 	if (defined $gtf) {
 		my $bam = $prefix . "Aligned.sortedByCoord.out.bam";
 		my $command = "featureCounts -a $gtf -o $prefix.featureCounts $bam";
-		if (!$debug) {
-			print "Would now run featureCounts\n";
-#			execute($command);
+		if ($debug) {
+			say "Would now run featureCounts";
+		} else {
+			execute($command);
 		}
 	}
+	chdir $TOP_DIRECTORY or die "Can't chdir to $TOP_DIRECTORY: $!";
 }
-
